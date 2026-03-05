@@ -9,6 +9,7 @@ class AgentState(TypedDict):
     # Extractor Data ---
     intent: Optional[str]
     goal: Optional[Literal["weight_loss", "weight_gain", "bulk", "lean"]]
+    user_name: Optional[str]
     
     # Physical Metrics ---
     height: Optional[float]
@@ -25,3 +26,8 @@ class AgentState(TypedDict):
     critic_feedback: Optional[str]
     is_safe: Optional[bool]
     total_plan_metrics: dict
+    consumed_today: List[str]
+    remaining_budget:List[int]
+    consumed_today: List[Dict[str, Any]] # List of food data from USDA
+    remaining_budget: Dict[str, float]   # The 'Leftover' calories/macros
+    latest_logged_food: Optional[Dict[str, Any]] # Temporary storage for current log

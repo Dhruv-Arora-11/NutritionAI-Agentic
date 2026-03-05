@@ -12,6 +12,8 @@ async def nutrition_agent(state: AgentState):
     print("calculates bmi,bmr")
     h, w = state.get("height"), state.get("weight")
     goal = state.get("goal")
+    diet_preference = state.get("diet_preference")
+    
 
     # 1. Get Baseline Metrics
     bmi_resp = await call_mcp_tool("calc_bmi", {"height": h, "weight": w})
@@ -23,7 +25,7 @@ async def nutrition_agent(state: AgentState):
 
     planner_prompt = f"""
     You are a professional Nutritionist.
-    Patient Data: BMI {bmi_val}, BMR {bmr_val}. Goal: {goal}.
+    Patient Data: BMI {bmi_val}, BMR {bmr_val}. Goal: {goal} , diet_preference: {diet_preference}.
     
     Suggest exactly 3 meals: breakfast, lunch, and dinner.
     
@@ -32,6 +34,7 @@ async def nutrition_agent(state: AgentState):
     1. 'quantity' MUST be a raw number (integer) representing grams. 
     2. DO NOT add 'g' or 'grams' after the number.
     3. Use ONLY these keys: "food_name", "quantity".
+    4. Do not cross the diet pref boundary . everything should be according to what we want.
     
     JSON Structure:
     {{

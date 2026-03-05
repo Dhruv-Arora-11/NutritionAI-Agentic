@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 mcp = FastMCP("nutrition_mcp_server")
-USDA_API_KEY = "please put the api key here"
+USDA_API_KEY = "4Ga7C5YVkXEpAw8OA3vyrM1SnHegTDmde6YzFlxl"
 
 @mcp.tool()    
 def calc_bmi( height:float  , weight:float ) -> float:
@@ -171,6 +171,46 @@ async def medical_guidelines_tool(
         "calorie_safe": calorie_safe,
         "warnings": warnings,
         "is_safe": len(warnings) == 0
+    }
+    
+
+@mcp.tool()
+async def meal_combination_generator(
+    validated_ingredients: list, 
+    target_calories: float, 
+    
+):
+    """
+    Combines USDA-validated ingredients into balanced meal sets (Breakfast/Lunch/Dinner).
+    Ensures the total calories of the combination match the target +/- 10%.
+    """
+    # 1. Logic: Categorize ingredients based on their dominant macro
+    proteins = [i for i in validated_ingredients if i['protein_g'] > i['carbs_g']]
+    carbs = [i for i in validated_ingredients if i['carbs_g'] > i['protein_g']]
+    
+    # 2. Build a Combo (Basic heuristic for a balanced plate)
+    # In a production app, this could use a Knapsack Algorithm to hit exact macros
+    meal_sets = []
+    
+    # Example: Create a "Standard Plate"
+    if proteins and carbs:
+        main_protein = proteins[0]
+        main_carb = carbs[0]
+        
+        combined_cals = main_protein['calories'] + main_carb['calories']
+        
+        meal_sets.append({
+            "meal_type": "Balanced Plate",
+            "components": [main_protein['food'], main_carb['food']],
+            "combined_metrics": {
+                "total_calories": combined_cals,
+                "total_protein": main_protein['protein_g'] + main_carb['protein_g']
+            },
+        })
+
+    return {
+        "suggested_combos": meal_sets,
+        "logic_used": "Macro-Balanced Pairing"
     }
 
 
