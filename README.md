@@ -12,7 +12,7 @@
 
 The core of NutritionAI is a directed graph that manages state transitions between specialized nodes. This ensures that every recommendation is grounded in real data and safety-checked.
 
-![Project Screenshot](./project_structure_flow.jpg)
+![Project Screenshot](./workflow.jpg)
 
 
 

@@ -13,10 +13,7 @@ def calc_bmi( height:float  , weight:float ) -> float:
     """Calculate BMI using weight (kg) and height (meters)."""      #tool descrip. for LLM (DOCSTRING)
     bmi = weight / (height ** 2)
     return bmi
-    # return {
-    #         "bmi": bmi, 
-    #         "final_response": f"I've calculated your BMI as {bmi}."
-    #     }
+
     
 @mcp.tool()
 def calculate_bmr(weight: float, height: float, age: int, gender: str) -> float:
@@ -25,15 +22,10 @@ def calculate_bmr(weight: float, height: float, age: int, gender: str) -> float:
     height_cm = height * 100 
     if gender.lower() == "male":
         return (10 * weight) + (6.25 * height_cm) - (5 * age) + 5
-        # return {
-        #     "bmr" : (10 * weight) + (6.25 * height_cm) - (5 * age) + 5
-        # }
+
     else:
         return (10 * weight) + (6.25 * height_cm) - (5 * age) - 161
-        # return {
-        #     "bmr" : (10 * weight) + (6.25 * height_cm) - (5 * age) - 161,
-        #     }
-    
+
 
 @mcp.tool()
 def calculate_macros(total_calories: float, goal: str):
@@ -41,6 +33,7 @@ def calculate_macros(total_calories: float, goal: str):
     if goal == "bulk":
         return {"p": 0.30, "c": 0.50, "f": 0.20} # High carb for energy
     return {"p": 0.40, "c": 0.30, "f": 0.30}     # High protein for weight loss
+
 
 @mcp.tool()
 async def food_database_tool(food_name: str, quantity: float):
