@@ -1,35 +1,45 @@
-from mcp import ClientSession
-from mcp.client.sse import sse_client
+from langchain_mcp_adapters.client import MultiServerMCPClient
 import asyncio
 
+# Global client (same server as before)
+client = MultiServerMCPClient({
+    "math": {
+        "transport": "sse",
+        "url": "http://localhost:8000/sse"
+    }
+})
+
+# Cache tools (avoid reloading every time)
+_tools_cache = None
+
+async def _get_tools():
+    tools = await client.get_tools()
+    return tools
+
+
 async def call_mcp_tool(tool_name: str, arguments: dict):
-    """
-    The 'Universal Remote' that connects to your MCP Server 
-    and executes ANY tool by name.
-    """
-    url = "http://localhost:8000/sse"
-    
     try:
-        async with sse_client(url) as (read, write):
-            async with ClientSession(read, write) as session:
-                # 1. Initialize the connection
-                await session.initialize()
-                print("server initialized")
-                
-                print(f"--- LOG: Client calling tool '{tool_name}' with {arguments} ---")
-                result = await session.call_tool(tool_name, arguments)
-                print(result)
-                print("got result")
-                
-                # 3. FastMCP tools usually return a list of content blocks
-                # We extract the 'text' which is our JSON/Dict result
-                if result.content and len(result.content) > 0:
-                    import json
-                    # Convert the string output from the tool back into a Python Dict
-                    return json.loads(result.content[0].text)
-                
-                return None
-                
+        tools = await _get_tools()
+
+        # traversing tools
+        tool = None
+        for t in tools:
+            if t.name == tool_name:
+                tool = t
+                break
+
+        if tool is None:
+            raise Exception(f"Tool '{tool_name}' not found")
+
+        print(f"--- LOG: Client calling tool '{tool_name}' with {arguments} ---")
+
+        # Call tool
+        result = await tool.ainvoke(arguments)
+
+        print("got result")
+
+        return result
+
     except Exception as e:
         print(f"--- ERROR: MCP Client failed: {e} ---")
         return {"error": str(e)}
