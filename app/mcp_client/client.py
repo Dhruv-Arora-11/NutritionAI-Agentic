@@ -13,8 +13,10 @@ client = MultiServerMCPClient({
 _tools_cache = None
 
 async def _get_tools():
-    tools = await client.get_tools()
-    return tools
+    global _tools_cache
+    if _tools_cache is None:
+        _tools_cache = await client.get_tools()   # fetch once
+    return _tools_cache
 
 
 async def call_mcp_tool(tool_name: str, arguments: dict):
