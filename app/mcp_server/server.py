@@ -8,21 +8,27 @@ load_dotenv()
 mcp = FastMCP("nutrition_mcp_server")
 USDA_API_KEY = "4Ga7C5YVkXEpAw8OA3vyrM1SnHegTDmde6YzFlxl"
 
-@mcp.tool()    
-def calc_bmi( height:float  , weight:float ) -> float:
-    """Calculate BMI using weight (kg) and height (meters)."""      #tool descrip. for LLM (DOCSTRING)
-    bmi = weight / (height ** 2)
-    return bmi
+
+@mcp.tool()
+def calc_bmi(height: float, weight: float) -> float:
+    """Calculate BMI using weight in kg and height in cm."""
+    height_m = height / 100
+    if height_m <= 0 or weight <= 0:
+        raise ValueError("Height and weight must be positive.")
+    return round(weight / (height_m ** 2), 2)
 
     
+
 @mcp.tool()
 def calculate_bmr(weight: float, height: float, age: int, gender: str) -> float:
-    """Calculates BMR using the Mifflin-St Jeor Equation."""
-    # height in cm for this formula
-    height_cm = height * 100 
+    """Calculate BMR using weight in kg, height in cm, age in years."""
+    height_cm = height  # The caller already passes centimeters.
+
+    if weight <= 0 or height_cm <= 0 or age <= 0:
+        raise ValueError("Weight, height, and age must be positive.")
+
     if gender.lower() == "male":
         return (10 * weight) + (6.25 * height_cm) - (5 * age) + 5
-
     else:
         return (10 * weight) + (6.25 * height_cm) - (5 * age) - 161
 
@@ -43,41 +49,107 @@ async def food_database_tool(food_name: str, quantity: float):
     if not USDA_API_KEY:
         return {"error": "USDA API Key is missing from environment variables."}
 
+    if not food_name.strip() or quantity <= 0:
+        return {"error": "Food name must not be empty and quantity must be positive."}
+
     params = {
         "api_key": USDA_API_KEY,
         "query": food_name,
-        "pageSize": 1,
-        "dataType": ["Foundation", "SR Legacy"] # These are usually the most accurate
+        "pageSize": 10,
+        "dataType": ["Foundation", "SR Legacy"],
     }
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(search_url, params=params) as response:
                 if response.status != 200:
-                    return {"error": f"USDA API returned status {response.status}"}
+                    return {
+                        "error": f"USDA API returned status {response.status}"
+                    }
                 data = await response.json()
 
-        foods = data.get("foods")
+        foods = data.get("foods", [])
+
         if not foods:
             return {"error": f"No food found for '{food_name}'"}
 
-        food = foods[0]
+        candidates = [
+            {
+                "description": item.get("description"),
+                "dataType": item.get("dataType"),
+                "fdcId": item.get("fdcId"),
+            }
+            for item in foods[:10]
+        ]
+        print(f"USDA candidates for '{food_name}': {candidates}")
+
+        def normalize(text: str) -> set[str]:
+            return set(
+                text.lower()
+                .replace(",", " ")
+                .replace("-", " ")
+                .split()
+            )
+
+        query_words = normalize(food_name)
+        ranked_foods = []
+
+        for item in foods:
+            description = item.get("description", "")
+            description_words = normalize(description)
+
+            if query_words & description_words:
+                ranked_foods.append(item)
+
+        if not ranked_foods:
+            return {
+                "error": (
+                    f"No sufficiently close USDA match found for '{food_name}'. "
+                    "Try a more specific food name."
+                )
+            }
+
+        food = max(
+            ranked_foods,
+            key=lambda item: len(
+                query_words & normalize(item.get("description", ""))
+            ),
+        )
+        print("USDA SELECTED:", food.get("description"))
+
         nutrients = food.get("foodNutrients", [])
 
-        # Helper to find nutrients by name or common variations
         def get_nutrient(names):
-            for n in nutrients:
-                if n.get("nutrientName") in names:
-                    return n.get("value", 0)
+            for nutrient in nutrients:
+                if nutrient.get("nutrientName") in names:
+                    return nutrient.get("value", 0)
             return 0
 
-        # USDA names can be tricky, so we check a few common variants
-        calories = get_nutrient(["Energy", "Energy (kcal)"])
+        # Select kcal specifically, not the separate kJ entry.
+        calories = next(
+            (
+                nutrient.get("value", 0)
+                for nutrient in nutrients
+                if nutrient.get("nutrientName") == "Energy"
+                and nutrient.get("unitName", "").upper() == "KCAL"
+            ),
+            None,
+        )
+
+        if calories is None:
+            return {
+                "error": (
+                    f"No kcal energy value found for "
+                    f"'{food.get('description', food_name)}'"
+                )
+            }
+
         protein = get_nutrient(["Protein"])
         fat = get_nutrient(["Total lipid (fat)", "Fat"])
-        carbs = get_nutrient(["Carbohydrate, by difference", "Carbohydrates"])
+        carbs = get_nutrient(
+            ["Carbohydrate, by difference", "Carbohydrates"]
+        )
 
-        # USDA values are per 100g
         factor = quantity / 100
 
         return {
@@ -87,11 +159,11 @@ async def food_database_tool(food_name: str, quantity: float):
             "protein_g": round(protein * factor, 2),
             "carbs_g": round(carbs * factor, 2),
             "fat_g": round(fat * factor, 2),
-            "source": "USDA FoodData Central"
+            "source": "USDA FoodData Central",
         }
+
     except Exception as e:
-        return {"error": f"Connection failed: {str(e)}"}    
-    
+        return {"error": f"Connection failed: {str(e)}"}
     
 @mcp.tool()
 async def medical_guidelines_tool(
@@ -103,9 +175,9 @@ async def medical_guidelines_tool(
 ):
     warnings = []
 
-    # ----------------------------
-    # 1️⃣ BMI Classification
-    # ----------------------------
+
+    # 1️. BMI Classification
+    
     if bmi < 18.5:
         bmi_category = "Underweight"
     elif 18.5 <= bmi < 25:
@@ -115,10 +187,8 @@ async def medical_guidelines_tool(
     else:
         bmi_category = "Obese"
 
-    # ----------------------------
-    # 2️⃣ Safe Protein Range
+    # 2️. Safe Protein Range
     # 1.2g – 2.2g per kg bodyweight
-    # ----------------------------
     min_protein = 1.2 * weight
     max_protein = 2.2 * weight
 
@@ -129,11 +199,10 @@ async def medical_guidelines_tool(
             f"Protein should be between {round(min_protein)}g and {round(max_protein)}g"
         )
 
-    # ----------------------------
-    # 3️⃣ Calorie Safety Logic
+    # 3. Calorie Safety Logic
     # (basic adjustment logic)
-    # ----------------------------
     # Rough maintenance estimation
+    
     maintenance_low = weight * 28
     maintenance_high = weight * 33
 
@@ -149,15 +218,13 @@ async def medical_guidelines_tool(
             calorie_safe = False
             warnings.append("Calories too low for muscle gain")
 
-    # ----------------------------
-    # 4️⃣ Extreme BMI Warning
-    # ----------------------------
+    # 4️ Extreme BMI Warning
+    
     if bmi >= 35:
         warnings.append("Medical supervision strongly recommended")
 
-    # ----------------------------
     # Final Structured Output
-    # ----------------------------
+    
     return {
         "bmi_category": bmi_category,
         "protein_safe": protein_safe,

@@ -16,6 +16,8 @@ class ExtractionSchema(BaseModel):
     goal: Optional[str] = None
     height: Optional[float] = None
     weight: Optional[float] = None
+    age: Optional[int] = None
+    gender: Optional[Literal["male", "female"]] = None
     diet_preference: Optional[str] = None
     # Add this to capture the food logging data!
     logged_food: Optional[Dict[str, Any]] = None 
@@ -29,14 +31,17 @@ async def extractor_node(state: dict):
     2. "intent": MUST be "plan_new_diet" or "log_food". 
     3. "height", "weight", "goal", "diet_preference": Extract values if present.
     4. "logged_food": If intent is "log_food", extract {"name": str, "quantity": float}.
+    5. "age": Extract the user's age in years as an integer, if provided.
+    6. "gender": Extract "male" or "female" if explicitly provided; otherwise return null.
     """
 
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-20b",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_input}
         ],
+        max_tokens=4096,
         response_format={"type": "json_object"}
     )
     
@@ -46,7 +51,12 @@ async def extractor_node(state: dict):
         # 1. Load as a standard dict first to clean it
         data_dict = json.loads(raw_content)
         
-        # 2. SANITIZE: Fix the "null" string issue or missing intent
+        """
+            if there is some feild missing, then it can cause the null string issue, so fixing that as well.
+            but we are already handling, if there is some missing infromation about user except intent, then it will 
+            be asking user again about that info, but in case of unknown intent, we are not handling that.
+        """
+        
         valid_intents = ["plan_new_diet", "log_food"]
         if data_dict.get("intent") not in valid_intents:
             # If it's "null", "Unknown", or None, default to plan_new_diet

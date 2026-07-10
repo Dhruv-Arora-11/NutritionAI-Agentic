@@ -1,0 +1,23 @@
+
+[project]
+name = "langgraph-multi-agent"
+version = "0.1.0"
+description = "Learning LangGraph and building multi-agent systems"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph",
+    "langchain",
+    "langchain-openai",
+    "typing-extensions",
+    "python-dotenv",
+    "langchain-groq==0.3.8",
+    "typing-extensions>=4.7.0",
+    "psycopg2>=2.9.13",
+    "tzdata>=2026.5",
+    "langchain-mcp-adapters==0.1.9",
+    "mcp<2",
+    "aiohttp>=3.14.5",
+]
+
+[tool.uv]
+package = false

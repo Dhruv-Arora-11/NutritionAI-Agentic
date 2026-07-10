@@ -18,10 +18,15 @@ class AgentState(TypedDict):
     gender: Optional[Literal["male", "female"]]
     diet_preference: Optional[Literal["veg", "non-veg", "vegan"]]
     
+
     # Agent Outputs ---
     suggested_meals: List[Dict[str, Any]]
+    meal_details: List[Dict[str, Any]]
     bmi_result: Optional[float]
     daily_calories: Optional[float]
+    total_plan_metrics: Dict[str, Any]
+    seven_day_plan: Optional[str]
+    final_response: Optional[str]
     meal_plan: Optional[list]
     critic_feedback: Optional[str]
     is_safe: Optional[bool]

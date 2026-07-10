@@ -17,7 +17,24 @@ async def nutrition_agent(state: AgentState):
 
     # 1. Get Baseline Metrics
     bmi_resp = await call_mcp_tool("calc_bmi", {"height": h, "weight": w})
-    bmr_resp = await call_mcp_tool("calculate_bmr", {"height": h, "weight": w, "age": 25, "gender": "male"})
+    age = state.get("age")
+    gender = state.get("gender")
+    
+    if age is None or gender is None:
+        raise ValueError(
+            "Age and gender are required for BMR calculation. "
+            "Check that the extractor provides both fields."
+        )
+    
+    bmr_resp = await call_mcp_tool(
+        "calculate_bmr",
+        {
+            "weight": w,
+            "height": h,
+            "age": age,
+            "gender": gender,
+        },
+    )
     
     # Extract the raw numbers from the MCP response
     bmi_val = bmi_resp
@@ -47,9 +64,10 @@ async def nutrition_agent(state: AgentState):
     """
     
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-20b",
         messages=[{"role": "user", "content": planner_prompt}],
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        max_tokens=4096,
     )
     
     raw_content = json.loads(response.choices[0].message.content)
@@ -63,77 +81,199 @@ async def nutrition_agent(state: AgentState):
         "daily_calories": bmr_val
     }
 
+
 async def nutritional_executor(state: AgentState):
     print("--- LOG: Entering nutritional_executor ---")
+
     meals = state.get("suggested_meals", [])
-
-    total_metrics = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
+    total_metrics = {
+        "calories": 0.0,
+        "protein": 0.0,
+        "carbs": 0.0,
+        "fat": 0.0,
+    }
     detailed_plan = []
-    print("just before going to loop")
-    print(meals)
-    print("meals ended")
+    successful_lookups = 0
+
     for item in meals:
-        print("in thte loop")
-        print(f"--- LOG: Fetching data for {item['food_name']} ({item['quantity']}g) ---")
-        
-        # 1. Call the tool
-        response = await call_mcp_tool("food_database_tool", {
-            "food_name": item["food_name"], 
-            "quantity": item["quantity"]
-        })
-        print("this is hte respnose")
-        print(response)
-        print("response ended")
-        # 2. Extract the actual data! 
-        # Your logs show the result is often inside 'structuredContent' or a 'result' key
-        # Let's handle the common dictionary format returned by our bridge
-        data = response.get("result", response) if isinstance(response, dict) else {}
+        food_name = item.get("food_name", "Unknown food")
+        quantity = item.get("quantity", 0)
 
-        # 3. Aggregate using the exact keys from your MCP server (check your server code!)
-        # If your server returns 'protein_g', use that here.
-        total_metrics["calories"] += data.get("calories", 0)
-        total_metrics["protein"] += data.get("protein_g", 0) or data.get("protein", 0)
-        total_metrics["carbs"] += data.get("carbs_g", 0) or data.get("carbs", 0)
-        total_metrics["fat"] += data.get("fat_g", 0) or data.get("fat", 0)
-        
-        detailed_plan.append(data)
+        print(f"--- LOG: Fetching data for {food_name} ({quantity}g) ---")
 
-    print(f"--- LOG: Final Calculated Metrics: {total_metrics} ---")
-    
+        try:
+            response = await call_mcp_tool(
+                "food_database_tool",
+                {
+                    "food_name": food_name,
+                    "quantity": quantity,
+                },
+            )
+
+            data = response
+
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                    data = {"error": f"Invalid tool response: {data}"}
+
+            if isinstance(data, dict) and isinstance(data.get("result"), dict):
+                data = data["result"]
+
+            if not isinstance(data, dict) or data.get("error"):
+                error = (
+                    data.get("error", "Unexpected tool response")
+                    if isinstance(data, dict)
+                    else "Unexpected tool response format"
+                )
+                print(f"Nutrition lookup failed for {food_name}: {error}")
+
+                # Preserve the suggested meal so the planner can still proceed.
+                detailed_plan.append({
+                    "food": food_name,
+                    "quantity_g": quantity,
+                    "nutrition_available": False,
+                    "error": error,
+                })
+                continue
+
+            total_metrics["calories"] += float(data.get("calories") or 0)
+            total_metrics["protein"] += float(
+                data.get("protein_g", data.get("protein", 0)) or 0
+            )
+            total_metrics["carbs"] += float(
+                data.get("carbs_g", data.get("carbs", 0)) or 0
+            )
+            total_metrics["fat"] += float(
+                data.get("fat_g", data.get("fat", 0)) or 0
+            )
+
+            data["nutrition_available"] = True
+            detailed_plan.append(data)
+            successful_lookups += 1
+
+        except Exception as exc:
+            print(f"Nutrition tool exception for {food_name}: {exc}")
+            detailed_plan.append({
+                "food": food_name,
+                "quantity_g": quantity,
+                "nutrition_available": False,
+                "error": str(exc),
+            })
+
+    print(f"--- LOG: Successful lookups: {successful_lookups}/{len(meals)} ---")
+    print(f"--- LOG: Calculated metrics: {total_metrics} ---")
+
     return {
         "total_plan_metrics": total_metrics,
-        "meal_details": detailed_plan
+        "meal_details": detailed_plan,
     }
+
+
+
 async def medical_critic(state: AgentState):
     print("--- LOG: Entering medical_critic ---")
-    
-    # Check if we are using 'total_plan_metrics' or if it's nested
+
     metrics = state.get("total_plan_metrics", {})
-    
-    # Debug: See what the critic actually sees
-    print(f"--- DEBUG: Critic sees metrics: {metrics} ---")
+    meals = state.get("meal_details", [])
+    successful_meals = [
+        meal for meal in meals
+        if meal.get("nutrition_available", True)
+    ]
+    failed_meals = [
+        meal for meal in meals
+        if not meal.get("nutrition_available", True)
+    ]
 
-    # If metrics is empty, we have a state saving issue
-    calories = metrics.get("calories", 0)
-    protein = metrics.get("protein", 0)
+    if not successful_meals:
+        safety_report = {
+            "is_safe": False,
+            "calorie_safe": False,
+            "protein_safe": False,
+            "warnings": [
+                "Nutrition lookup failed for all suggested meals. "
+                "A nutrition safety assessment could not be completed."
+            ],
+        }
 
-    safety_check = await call_mcp_tool("medical_guidelines_tool", {
-        "bmi": state.get("bmi_result"),
-        "weight": state.get("weight"),
-        "daily_calories": calories, # Use the extracted variable
-        "protein": protein,         # Use the extracted variable
-        "goal": state.get("goal")
-    })
+        return {
+            "safety_report": safety_report,
+            "final_response": (
+                "Nutrition safety review could not be completed because "
+                "nutrition data was unavailable. The meal suggestions are "
+                "still available for the planner."
+            ),
+            "meal_details": meals,
+            "total_plan_metrics": metrics,
+        }
 
-    # This is the final message the user will see
-    report = safety_check.get("warnings", [])
-    status = "SAFE" if safety_check.get("is_safe") else "WARNING"
-    
+    # Normalize the goal to the values expected by the MCP tool.
+    raw_goal = str(state.get("goal", "")).lower().replace(" ", "").replace("_", "")
+
+    if raw_goal in {"loseweight", "weightloss", "fatloss"}:
+        goal = "weight_loss"
+    elif raw_goal in {"weightgain", "gainweight"}:
+        goal = "weight_gain"
+    elif raw_goal in {"bulk", "bulking"}:
+        goal = "bulk"
+    else:
+        goal = raw_goal
+
+    safety_check = await call_mcp_tool(
+        "medical_guidelines_tool",
+        {
+            "bmi": state.get("bmi_result"),
+            "weight": state.get("weight"),
+            "daily_calories": metrics.get("calories", 0),
+            "protein": metrics.get("protein", 0),
+            "goal": goal,
+        },
+    )
+
+    if isinstance(safety_check, str):
+        try:
+            safety_check = json.loads(safety_check)
+        except json.JSONDecodeError:
+            safety_check = {"error": "Invalid medical guidelines response"}
+
+    if not isinstance(safety_check, dict) or safety_check.get("error"):
+        safety_check = {
+            "is_safe": False,
+            "warnings": ["Medical guidelines response could not be processed."],
+        }
+
+    warnings = list(safety_check.get("warnings", []))
+
+    if failed_meals:
+        warnings.append(
+            f"Nutrition data was unavailable for {len(failed_meals)} "
+            "suggested meal(s); calculated metrics may be incomplete."
+        )
+        safety_check["is_safe"] = False
+        safety_check["warnings"] = warnings
+
+    status = "SAFE" if safety_check.get("is_safe") is True else "WARNING"
+
     final_msg = f"--- Nutrition Report [{status}] ---\n"
-    final_msg += f"Total Calories: {metrics.get('calories')} kcal\n"
-    final_msg += f"Findings: {', '.join(report) if report else 'Plan meets medical guidelines.'}"
 
-    return {"safety_report": safety_check, "final_response": final_msg}
+    if failed_meals:
+        final_msg += "Nutrition metrics are partial and may not represent the full plan.\n"
+    else:
+        final_msg += f"Total Calories: {metrics.get('calories', 0)} kcal\n"
+
+    final_msg += (
+        "Findings: "
+        + (", ".join(warnings) if warnings else "Plan meets medical guidelines.")
+    )
+
+    return {
+        "safety_report": safety_check,
+        "final_response": final_msg,
+        "meal_details": meals,
+        "total_plan_metrics": metrics,
+    }
+
 
 
 nutritionist_builder = StateGraph(AgentState)

@@ -1,257 +1,319 @@
+
 from dotenv import load_dotenv
 from agent_state import AgentState
-from langgraph.graph import StateGraph , START , END
+from langgraph.graph import StateGraph, START, END
 import asyncio
-from agents.extractor import extractor_node
-from agents.nutrition_requirement import nutrition_agent as nutritionist
+
 from agents.extractor import extractor_node
 from agents.nutrition_requirement import nutritionist_team
 from agents.diet_planner import planner_agent
 from agents.tracker import tracker_agent
-import psycopg2
-from postgre.identity import get_db_connection
-from agent_state import AgentState
 from agents.kb_responsder import kb_responder_node
-from postgre.identity import init_db
+from postgre.identity import get_db_connection, init_db
+
 
 load_dotenv()
-async def start_node(state:AgentState):
-    print(f"--- LOG: Received Input: {state.user_input} ---")
-    return state
-
-workflow_graph = StateGraph(AgentState)   # initialize the graph
 
 
-
-async def check_history_node(state: AgentState):
-    print("--- LOG: Checking User History ---")
-    name = state.get("user_name")
-    
-    # Path 1: No name extracted yet
-    if not name:
-        print("--- LOG: No name in state, skipping history check ---")
-        return {} 
-
-    conn = get_db_connection()
-    
-    # Path 2: Database Connection Failed
-    if not conn:
-        print("⚠️ DB Connection failed in check_history_node")
-        return {"is_new_user": True} 
-
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT height, weight, goal FROM user_profiles WHERE user_name = %s", (name,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if row:
-            # Path 3: Existing User Found (Merge history with current state)
-            print(f"--- DB: Found history for {name} ---")
-            return {
-                "height": state.get("height") or row[0],
-                "weight": state.get("weight") or row[1],
-                "goal": state.get("goal") or row[2],
-                "is_new_user": False
-            }
-        else:
-            # Path 4: New User (Not in DB)
-            print(f"--- DB: No history for {name} ---")
-            return {"is_new_user": True}
-            
-    except Exception as e:
-        print(f"❌ Error querying history: {e}")
-        return {"is_new_user": True}
+workflow_graph = StateGraph(AgentState)
 
 
-async def run_interaction():
-    # Initialize with None so identity_node knows it needs to ask/extract
-    current_state = {
-        "messages": [], 
-        "user_name": None, 
-        "height": None, 
-        "weight": None
-    }
-    
-    while True:
-        user_msg = input("\nUser: ")
-        current_state["user_input"] = user_msg
-
-        async for event in app.astream(current_state):
-            for node, state_update in event.items():
-                if not isinstance(state_update, dict):
-                    print("Invalid state update:", state_update)
-                    continue
-                
-                # 1. Filter out Nones
-                filtered_update = {k: v for k, v in state_update.items() if v is not None}
-                
-                # 2. CRITICAL: Actually update the state!
-                current_state.update(filtered_update)
-                print(f"--- Node {node} updated state with: {filtered_update.keys()} ---")
-
-        # THE RE-ASKING LOGIC
-        if not current_state.get("height") or not current_state.get("weight"):
-            print("Agent: I've got some of your info, but I still need your height and weight to calculate your BMI!")
-            # The loop continues, user types info, and it goes back to the Extractor!   
-            
-            # combined the if_valid_input and route_agent in the unified_router()
-
-def route_identity(state: AgentState):
-    # Logic: If the user is new, we stop to ask for stats. 
-    # If they exist, we proceed to the extractor.
-    if state.get("is_new_user"):
-        return "ask_initial_stats"
-    else:
-        return "extractor"
-
-
-async def identity_node(state: AgentState):
-    print("--- LOG: Entering Identity Node ---")
-    user_input = state.get("user_input", "").strip()
-    
-    # Check if we already have the name in state
-    if state.get("user_name"):
-        return {}
-
-    # Define name early so it's available everywhere in this function
-    name = user_input
-    conn = get_db_connection()
-    
-    if not conn:
-        print("⚠️ WARNING: Database is offline. Operating in guest mode.")
-        return {
-            "user_name": name, 
-            "is_new_user": True,
-            "final_response": f"Database offline. Proceeding as guest, {name}. What are your stats?"
-        }
-
-    try:
-        cur = conn.cursor()
-        # Use 'name' which we defined above
-        cur.execute("SELECT height, weight, goal, diet_preference FROM user_profiles WHERE user_name = %s", (name,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if row:
-            return {
-                "user_name": name,
-                "is_new_user": False,
-                "height": row[0],
-                "weight": row[1],
-                "goal": row[2],
-                "diet_preference": row[3]
-            }
-        else:
-            return {
-                "user_name": name,
-                "is_new_user": True
-            }
-    except Exception as e:
-        print(f"Database error: {e}")
-        return {"user_name": name, "is_new_user": True}
-        
-        
 def unified_router(state: AgentState):
+    """Route each request according to its extracted intent."""
     intent = state.get("intent")
-    
-    # Path 1: General Knowledge Questions
+
     if intent == "general_query":
         return "kb_responder"
-        
-    # Path 2: Logging Food
+
     if intent == "log_food":
         return "tracker"
-    
-    # Path 3: Planning a Diet (Check for stats)
-    if state.get("height") and state.get("weight"):
-        return "nutritionist"
-    
+
+    if intent == "plan_new_diet":
+        if state.get("height") is not None and state.get("weight") is not None:
+            return "save_profile"
+        return "ask_more_info"
+
     return "ask_more_info"
 
 
 async def save_profile_node(state: AgentState):
+    print("\n========== SAVE PROFILE: START ==========")
+    print(f"[PROFILE DEBUG] Intent: {state.get('intent')!r}")
+    print(f"[PROFILE DEBUG] User name: {state.get('user_name')!r}")
+    print(f"[PROFILE DEBUG] Height: {state.get('height')!r}")
+    print(f"[PROFILE DEBUG] Weight: {state.get('weight')!r}")
+    print(f"[PROFILE DEBUG] Goal: {state.get('goal')!r}")
+    print(
+        f"[PROFILE DEBUG] Diet preference: "
+        f"{state.get('diet_preference')!r}"
+    )
+
+    if state.get("intent") == "log_food":
+        print("[PROFILE DEBUG] Skipping profile save: food-logging intent")
+        result = {}
+        print(f"[PROFILE DEBUG] Returning {result!r}, type={type(result).__name__}")
+        print("========== SAVE PROFILE: END ==========\n")
+        return result
+
     user_name = state.get("user_name")
-    
-    # We only save if we have a name and at least one physical stat
-    if user_name and (state.get("height") or state.get("weight")):
+
+    if not user_name:
+        print("[PROFILE DEBUG] Skipping: user_name is missing")
+        result = {}
+        print(f"[PROFILE DEBUG] Returning {result!r}, type={type(result).__name__}")
+        print("========== SAVE PROFILE: END ==========\n")
+        return result
+
+    if state.get("height") is None and state.get("weight") is None:
+        print("[PROFILE DEBUG] Skipping: both height and weight are missing")
+        result = {}
+        print(f"[PROFILE DEBUG] Returning {result!r}, type={type(result).__name__}")
+        print("========== SAVE PROFILE: END ==========\n")
+        return result
+
+    conn = None
+
+    try:
+        print("[PROFILE DEBUG] Opening PostgreSQL connection...")
         conn = get_db_connection()
-        if conn:
-            try:
-                cur = conn.cursor()
-                # UPSERT: Insert new or Update if user_name exists
-                cur.execute("""
-                    INSERT INTO user_profiles (user_name, height, weight, goal, diet_preference)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (user_name) 
-                    DO UPDATE SET 
-                        height = COALESCE(EXCLUDED.height, user_profiles.height),
-                        weight = COALESCE(EXCLUDED.weight, user_profiles.weight),
-                        goal = COALESCE(EXCLUDED.goal, user_profiles.goal),
-                        diet_preference = COALESCE(EXCLUDED.diet_preference, user_profiles.diet_preference),
-                        last_updated = CURRENT_TIMESTAMP;
-                """, (
-                    user_name, 
-                    state.get("height"), 
-                    state.get("weight"), 
-                    state.get("goal"), 
-                    state.get("diet_preference")
-                ))
-                conn.commit()
-                cur.close()
-                conn.close()
-                print(f"--- DB: Saved/Updated data for {user_name} ---")
-            except Exception as e:
-                print(f"❌ DB Save Error: {e}")
-    
-    return {} # Crucial: Always return a dict to keep the graph moving
+
+        if conn is None:
+            print("[PROFILE ERROR] get_db_connection() returned None")
+            result = {}
+            print(f"[PROFILE DEBUG] Returning {result!r}")
+            print("========== SAVE PROFILE: END ==========\n")
+            return result
+
+        print("[PROFILE DEBUG] PostgreSQL connection acquired")
+
+        with conn.cursor() as cur:
+            print("[PROFILE DEBUG] Executing profile INSERT/UPDATE...")
+
+            cur.execute(
+                """
+                INSERT INTO user_profiles
+                    (user_name, height, weight, goal, diet_preference)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_name)
+                DO UPDATE SET
+                    height = COALESCE(
+                        EXCLUDED.height, user_profiles.height
+                    ),
+                    weight = COALESCE(
+                        EXCLUDED.weight, user_profiles.weight
+                    ),
+                    goal = COALESCE(
+                        EXCLUDED.goal, user_profiles.goal
+                    ),
+                    diet_preference = COALESCE(
+                        EXCLUDED.diet_preference,
+                        user_profiles.diet_preference
+                    ),
+                    last_updated = CURRENT_TIMESTAMP;
+                """,
+                (
+                    user_name,
+                    state.get("height"),
+                    state.get("weight"),
+                    state.get("goal"),
+                    state.get("diet_preference"),
+                ),
+            )
+
+            print(f"[PROFILE DEBUG] Rows affected: {cur.rowcount}")
+
+        print("[PROFILE DEBUG] Committing transaction...")
+        conn.commit()
+        print("[PROFILE DEBUG] COMMIT completed")
+
+        # Verify that the profile is readable after the commit.
+        with conn.cursor() as cur:
+            print("[PROFILE DEBUG] Reading profile back from database...")
+
+            cur.execute(
+                """
+                SELECT user_name, height, weight, goal,
+                       diet_preference, last_updated
+                FROM user_profiles
+                WHERE user_name = %s;
+                """,
+                (user_name,),
+            )
+
+            saved_profile = cur.fetchone()
+
+        if saved_profile:
+            print("[PROFILE VERIFY] Profile found after commit:")
+            print(f"[PROFILE VERIFY] User: {saved_profile[0]}")
+            print(f"[PROFILE VERIFY] Height: {saved_profile[1]}")
+            print(f"[PROFILE VERIFY] Weight: {saved_profile[2]}")
+            print(f"[PROFILE VERIFY] Goal: {saved_profile[3]}")
+            print(f"[PROFILE VERIFY] Diet: {saved_profile[4]}")
+            print(f"[PROFILE VERIFY] Updated at: {saved_profile[5]}")
+        else:
+            print(
+                "[PROFILE ERROR] INSERT/UPDATE completed, "
+                "but the profile could not be read back"
+            )
+
+    except Exception as e:
+        if conn is not None:
+            conn.rollback()
+
+        print(f"[PROFILE ERROR] {type(e).__name__}: {e}")
+        result = {}
+        print(f"[PROFILE DEBUG] Returning {result!r}, type={type(result).__name__}")
+        print("========== SAVE PROFILE: END ==========\n")
+        return result
+
+    finally:
+        if conn is not None:
+            conn.close()
+            print("[PROFILE DEBUG] PostgreSQL connection closed")
+
+    result = {}
+    print(f"[PROFILE DEBUG] Final return value: {result!r}")
+    print(f"[PROFILE DEBUG] Return type: {type(result).__name__}")
+    print("========== SAVE PROFILE: END ==========\n")
+
+    return result
+
+async def run_interaction():
+    """Run the interactive NutritionAI application."""
+
+    current_state = {
+        "messages": [],
+        "user_name": None,
+        "height": None,
+        "weight": None,
+    }
+
+    while True:
+        try:
+            user_msg = input("\nUser: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting NutritionAI.")
+            break
+
+        if not user_msg:
+            continue
+
+        if user_msg.lower() in {"exit", "quit", "bye"}:
+            print("Exiting NutritionAI.")
+            break
+
+        current_state["user_input"] = user_msg
+
+        try:
+            async for event in app.astream(
+                current_state,
+                stream_mode="updates",
+            ):
+                print(f"\n[GRAPH DEBUG] Raw stream event: {event!r}")
+                print(f"[GRAPH DEBUG] Event type: {type(event).__name__}")
+
+                for node, state_update in event.items():
+                    print(f"[GRAPH DEBUG] Node completed: {node}")
+                    print(f"[GRAPH DEBUG] Raw update: {state_update!r}")
+                
+                    # An empty/no-op update is not necessarily an error.
+                    if state_update is None:
+                        print(
+                            f"[GRAPH DEBUG] Node '{node}' produced no state updates. "
+                            "This is acceptable for a side-effect-only node."
+                        )
+                        continue
+                    
+                    if not isinstance(state_update, dict):
+                        print(
+                            f"[GRAPH ERROR] Unexpected update from '{node}': "
+                            f"{state_update!r} "
+                            f"(type: {type(state_update).__name__})"
+                        )
+                        continue
+                    
+                    filtered_update = {
+                        key: value
+                        for key, value in state_update.items()
+                        if value is not None
+                    }
+                
+                    if (
+                        node == "extractor"
+                        and not filtered_update.get("user_name")
+                        and current_state.get("user_name")
+                    ):
+                        filtered_update["user_name"] = current_state["user_name"]
+                
+                    current_state.update(filtered_update)
+                
+                    print(
+                        f"[GRAPH DEBUG] Applied keys from {node}: "
+                        f"{list(filtered_update.keys())}"
+                    )
+
+            # Ask for missing measurements only for diet-planning requests.
+            if current_state.get("intent") == "plan_new_diet":
+                if (
+                    current_state.get("height") is None
+                    or current_state.get("weight") is None
+                ):
+                    print(
+                        "Agent: I still need your height and weight "
+                        "to calculate your BMI. Please include them "
+                        "in your next message."
+                    )
+
+            # Display the most recent response, if one was produced.
+            response = current_state.get("final_response")
+            if response:
+                print(f"\nAgent: {response}")
+
+        except Exception as e:
+            print(f"An error occurred while processing your request: {e}")
 
 
-
-# 1. Register ALL nodes
-# --- 1. Register ALL nodes ---
-# --- 1. Register ALL nodes ---
+# Register graph nodes.
 workflow_graph.add_node("extractor", extractor_node)
-workflow_graph.add_node("check_history", check_history_node)
 workflow_graph.add_node("save_profile", save_profile_node)
 workflow_graph.add_node("nutritionist", nutritionist_team)
 workflow_graph.add_node("diet_architect", planner_agent)
 workflow_graph.add_node("tracker", tracker_agent)
 workflow_graph.add_node("kb_responder", kb_responder_node)
 
-# --- 2. Define Entry Point ---
+
+# Entry point.
 workflow_graph.add_edge(START, "extractor")
 
-# --- 3. The Persistence Pipeline ---
-# Step 1: LLM extracts Name/Stats -> Step 2: Look up DB for history -> Step 3: Save to DB
-workflow_graph.add_edge("extractor", "check_history")
-workflow_graph.add_edge("check_history", "save_profile")
 
-# --- 4. Main Intent Routing (The Junction) ---
+# Route requests based on the extracted intent.
 workflow_graph.add_conditional_edges(
-    "save_profile",
+    "extractor",
     unified_router,
     {
         "tracker": "tracker",
-        "nutritionist": "nutritionist",
+        "save_profile": "save_profile",
         "kb_responder": "kb_responder",
-        "ask_more_info": END 
-    }
+        "ask_more_info": END,
+    },
 )
 
-# --- 5. Define Terminal Edges ---
+
+# Profile persistence happens before diet generation.
+workflow_graph.add_edge("save_profile", "nutritionist")
 workflow_graph.add_edge("nutritionist", "diet_architect")
+
+
+# Terminal edges.
 workflow_graph.add_edge("diet_architect", END)
 workflow_graph.add_edge("tracker", END)
 workflow_graph.add_edge("kb_responder", END)
 
-# --- 6. Compile ---
+
+# Compile the application graph.
 app = workflow_graph.compile()
+
 
 if __name__ == "__main__":
     init_db()
     asyncio.run(run_interaction())
-    
-    
