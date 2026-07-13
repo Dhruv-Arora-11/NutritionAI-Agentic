@@ -6,8 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 mcp = FastMCP("nutrition_mcp_server")
-USDA_API_KEY = "4Ga7C5YVkXEpAw8OA3vyrM1SnHegTDmde6YzFlxl"
-
+USDA_API_KEY = os.getenv("USDA_API_KEY")
 
 @mcp.tool()
 def calc_bmi(height: float, weight: float) -> float:
